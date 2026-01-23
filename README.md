@@ -8,19 +8,364 @@
 
 ## Table des matières
 
-1. [Vue d'ensemble](#vue-densemble)
-2. [Structure du repository](#structure-du-repository)
-3. [Installation locale](#installation-locale)
-4. [Architecture de la base de données](#architecture-de-la-base-de-données)
-5. [Schéma détaillé des tables](#schéma-détaillé-des-tables)
-6. [Relations et clés étrangères](#relations-et-clés-étrangères)
-7. [Fonctions stockées PostgreSQL](#fonctions-stockées-postgresql)
-8. [Edge Functions (Deno)](#edge-functions-deno)
-9. [Storage et buckets](#storage-et-buckets)
-10. [Configuration Realtime](#configuration-realtime)
-11. [Types TypeScript](#types-typescript)
-12. [Workflow métier](#workflow-métier)
-13. [Notes de sécurité](#notes-de-sécurité)
+1. [Schémas visuels](#schémas-visuels) ⭐
+2. [Vue d'ensemble](#vue-densemble)
+3. [Structure du repository](#structure-du-repository)
+4. [Installation locale](#installation-locale)
+5. [Architecture de la base de données](#architecture-de-la-base-de-données)
+6. [Schéma détaillé des tables](#schéma-détaillé-des-tables)
+7. [Relations et clés étrangères](#relations-et-clés-étrangères)
+8. [Fonctions stockées PostgreSQL](#fonctions-stockées-postgresql)
+9. [Edge Functions (Deno)](#edge-functions-deno)
+10. [Storage et buckets](#storage-et-buckets)
+11. [Configuration Realtime](#configuration-realtime)
+12. [Types TypeScript](#types-typescript)
+13. [Workflow métier](#workflow-métier)
+14. [Notes de sécurité](#notes-de-sécurité)
+
+---
+
+## Schémas visuels
+
+### Diagramme Entité-Relation (ERD)
+
+```mermaid
+erDiagram
+    %% Authentification
+    AUTH_USERS ||--o| ADMINISTRATORS : "user_id"
+    AUTH_USERS ||--o| ADMINS : "user_id"
+    AUTH_USERS ||--|| LABORATORIES : "user_id"
+    AUTH_USERS ||--|| DRIVERS : "user_id"
+
+    %% Entités principales
+    LABORATORIES ||--|| LOCATIONS : "location_id"
+    LABORATORIES ||--o{ LABORATORY_CLIENTS : "laboratory_id"
+    LABORATORIES ||--o{ LAB_TOURS : "laboratory_id"
+    LABORATORIES ||--o{ BILLING_INVOICES : "laboratory_id"
+
+    DRIVERS ||--o{ LABORATORY_CLIENTS : "driver_id"
+    DRIVERS ||--o{ DRIVER_ROUTES : "driver_id"
+    DRIVERS ||--o{ DRIVER_STATISTICS : "driver_id"
+
+    LABORATORY_CLIENTS ||--|| LOCATIONS : "location_id"
+    LABORATORY_CLIENTS ||--o{ LAB_TOUR_STOPS : "client_id"
+    LABORATORY_CLIENTS ||--o{ BILLING_CONFIGURATIONS : "client_id"
+
+    %% Tournées laboratoire
+    LAB_TOURS ||--o{ LAB_TOUR_STOPS : "tour_id"
+    LAB_TOURS ||--o{ LAB_TOUR_SHIPMENTS : "lab_tour_id"
+    LAB_TOURS ||--o{ LAB_TOUR_LATE_STOPS : "lab_tour_id"
+
+    LAB_TOUR_SHIPMENTS }o--|| LOCATIONS : "from_location_id"
+    LAB_TOUR_SHIPMENTS }o--|| LOCATIONS : "to_location_id"
+
+    %% Routes livreur
+    DRIVER_ROUTES ||--o{ DRIVER_ROUTE_STOPS : "route_id"
+    DRIVER_ROUTES ||--o{ DRIVER_ROUTE_SHIPMENTS : "route_id"
+
+    DRIVER_ROUTE_STOPS }o--|| LOCATIONS : "location_id"
+    DRIVER_ROUTE_SHIPMENTS }o--|| DRIVER_ROUTE_STOPS : "pickup_stop_id"
+    DRIVER_ROUTE_SHIPMENTS }o--|| DRIVER_ROUTE_STOPS : "delivery_stop_id"
+    DRIVER_ROUTE_SHIPMENTS }o--|| LABORATORIES : "laboratory_id"
+    DRIVER_ROUTE_SHIPMENTS }o--o| LABORATORY_CLIENTS : "laboratory_client_id"
+
+    %% Facturation
+    BILLING_INVOICES ||--o{ BILLING_INVOICE_ITEMS : "invoice_id"
+    BILLING_INVOICE_ITEMS }o--|| BILLING_CONFIGURATIONS : "billing_configuration_id"
+
+    %% Autres
+    LOCATIONS ||--o{ LOCATION_PHOTOS : "location_id"
+    DEPOT ||--|| LOCATIONS : "location_id"
+
+    %% Définitions des tables
+    AUTH_USERS {
+        uuid id PK
+        string email
+        timestamp created_at
+    }
+
+    LABORATORIES {
+        uuid id PK
+        uuid user_id FK
+        string name
+        uuid location_id FK
+        boolean shared_pickup
+    }
+
+    DRIVERS {
+        uuid id PK
+        uuid user_id FK
+        string full_name
+        string sector
+        time start_time
+    }
+
+    LABORATORY_CLIENTS {
+        uuid id PK
+        uuid laboratory_id FK
+        uuid location_id FK
+        uuid driver_id FK
+        string name
+        string client_type
+    }
+
+    LOCATIONS {
+        uuid id PK
+        string formatted_address
+        decimal latitude
+        decimal longitude
+    }
+
+    LAB_TOURS {
+        uuid id PK
+        uuid laboratory_id FK
+        date date
+        string status
+    }
+
+    LAB_TOUR_STOPS {
+        uuid id PK
+        uuid tour_id FK
+        uuid client_id FK
+        boolean has_pickup
+        boolean has_delivery
+    }
+
+    DRIVER_ROUTES {
+        uuid id PK
+        uuid driver_id FK
+        date date
+        string status
+        decimal total_distance_km
+    }
+
+    DRIVER_ROUTE_STOPS {
+        uuid id PK
+        uuid route_id FK
+        uuid location_id FK
+        int stop_order
+        string stop_type
+        boolean completed
+    }
+
+    DRIVER_ROUTE_SHIPMENTS {
+        uuid id PK
+        uuid route_id FK
+        uuid pickup_stop_id FK
+        uuid delivery_stop_id FK
+        string pickup_status
+        string delivery_status
+        string proof_photo_url
+    }
+```
+
+### Workflow métier complet
+
+```mermaid
+flowchart TB
+    subgraph LAB["🏭 LABORATOIRE"]
+        L1[Crée une tournée<br/>lab_tours.status = draft]
+        L2[Ajoute les arrêts clients<br/>lab_tour_stops]
+        L3[Soumet la tournée<br/>lab_tours.status = pending]
+    end
+
+    subgraph ADMIN["👨‍💼 ADMIN"]
+        A1{Examine la<br/>tournée}
+        A2[Valide<br/>status = validated]
+        A3[Rejette<br/>status = rejected]
+        A4[Génère les routes<br/>generate_driver_routes]
+    end
+
+    subgraph SYSTEM["⚙️ SYSTÈME"]
+        S1[Crée driver_routes]
+        S2[Génère driver_route_stops]
+        S3[Génère driver_route_shipments]
+        S4[Optimise la route<br/>Edge Function]
+    end
+
+    subgraph DRIVER["🚗 LIVREUR"]
+        D1[Consulte sa route du jour]
+        D2[Démarre la route<br/>status = in_progress]
+        D3[Arrive à un arrêt]
+        D4[Effectue pickup/delivery]
+        D5[Prend photo preuve<br/>Edge Function]
+        D6[Marque arrêt terminé]
+        D7{Autres<br/>arrêts ?}
+        D8[Termine la route<br/>status = completed]
+    end
+
+    subgraph BILLING["💰 FACTURATION"]
+        B1[Fin de mois]
+        B2[generate_monthly_invoice]
+        B3[Facture générée]
+        B4[mark_invoice_as_sent]
+    end
+
+    L1 --> L2 --> L3 --> A1
+    A1 -->|Approuvée| A2
+    A1 -->|Problème| A3
+    A2 --> A4
+    A3 -.->|Notification| L1
+
+    A4 --> S1 --> S2 --> S3 --> S4
+
+    S4 --> D1 --> D2 --> D3 --> D4 --> D5 --> D6 --> D7
+    D7 -->|Oui| D3
+    D7 -->|Non| D8
+
+    D8 --> B1 --> B2 --> B3 --> B4
+
+    style LAB fill:#e1f5fe
+    style ADMIN fill:#fff3e0
+    style SYSTEM fill:#f3e5f5
+    style DRIVER fill:#e8f5e9
+    style BILLING fill:#fce4ec
+```
+
+### Architecture des données
+
+```mermaid
+flowchart LR
+    subgraph AUTH["🔐 Authentification"]
+        AU[auth.users]
+    end
+
+    subgraph USERS["👥 Utilisateurs"]
+        AD[administrators]
+        AM[admins]
+        LB[laboratories]
+        DR[drivers]
+    end
+
+    subgraph GEO["📍 Géolocalisation"]
+        LO[locations]
+        LP[location_photos]
+        DP[depot]
+    end
+
+    subgraph CLIENTS["🦷 Clients"]
+        LC[laboratory_clients]
+        LCA[laboratory_clients_audit]
+    end
+
+    subgraph TOURS["📋 Tournées Labo"]
+        LT[lab_tours]
+        LTS[lab_tour_stops]
+        LTSH[lab_tour_shipments]
+        LTLS[lab_tour_late_stops]
+    end
+
+    subgraph ROUTES["🚚 Routes Livreur"]
+        DRO[driver_routes]
+        DRS[driver_route_stops]
+        DRSH[driver_route_shipments]
+    end
+
+    subgraph STATS["📊 Statistiques"]
+        DST[driver_statistics]
+        LST[laboratory_statistics]
+        EL[error_logs]
+    end
+
+    subgraph BILLING["💳 Facturation"]
+        BC[billing_configurations]
+        BI[billing_invoices]
+        BII[billing_invoice_items]
+    end
+
+    AU --> AD & AM & LB & DR
+    LB --> LC
+    DR --> LC
+    LO --> LP
+    LO --> DP
+    LO --> LC
+    LO --> LB
+    LC --> LTS
+    LT --> LTS & LTSH & LTLS
+
+    LT -.->|generate_driver_routes| DRO
+    DRO --> DRS & DRSH
+
+    DR --> DST
+    LB --> LST
+    LB --> BI
+    LC --> BC
+    BI --> BII
+    BC --> BII
+
+    style AUTH fill:#ffcdd2
+    style USERS fill:#c8e6c9
+    style GEO fill:#b3e5fc
+    style CLIENTS fill:#fff9c4
+    style TOURS fill:#d1c4e9
+    style ROUTES fill:#ffccbc
+    style STATS fill:#b2dfdb
+    style BILLING fill:#f8bbd9
+```
+
+### Cycle de vie d'une tournée
+
+```mermaid
+stateDiagram-v2
+    [*] --> Draft: Création
+
+    Draft --> Pending: Soumission
+    Draft --> Draft: Modification
+
+    Pending --> Validated: Approbation admin
+    Pending --> Rejected: Rejet admin
+    Pending --> PendingChanges: Demande modifications
+
+    Rejected --> Draft: Correction
+    PendingChanges --> Validated: Réapprobation
+
+    Validated --> RouteGenerated: generate_driver_routes()
+
+    RouteGenerated --> InProgress: Livreur démarre
+    InProgress --> Completed: Tous arrêts terminés
+
+    Completed --> [*]
+
+    note right of Draft: lab_tours.status
+    note right of RouteGenerated: driver_routes créée
+    note right of InProgress: Suivi temps réel
+```
+
+### Types d'arrêts dans une route
+
+```mermaid
+flowchart LR
+    subgraph ROUTE["Route du livreur"]
+        direction TB
+        START((🏠 Départ<br/>Domicile))
+
+        DP[🏢 depot_pickup<br/>Récupération dépôt]
+
+        LP1[🏭 lab_pickup<br/>Labo A]
+        LP2[🏭 lab_pickup<br/>Labo B]
+
+        C1[🦷 client<br/>Dentiste 1<br/>pickup]
+        C2[🦷 client<br/>Dentiste 2<br/>delivery]
+        C3[🦷 client<br/>Dentiste 3<br/>both]
+
+        LD1[🏭 lab_dropoff<br/>Labo A]
+
+        DD[🏢 depot_dropoff<br/>Dépôt final]
+
+        END((🏠 Retour))
+    end
+
+    START --> DP --> LP1 --> LP2 --> C1 --> C2 --> C3 --> LD1 --> DD --> END
+
+    style DP fill:#bbdefb
+    style LP1 fill:#c8e6c9
+    style LP2 fill:#c8e6c9
+    style C1 fill:#fff9c4
+    style C2 fill:#fff9c4
+    style C3 fill:#fff9c4
+    style LD1 fill:#c8e6c9
+    style DD fill:#bbdefb
+```
 
 ---
 
