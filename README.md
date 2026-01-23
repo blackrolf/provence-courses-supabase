@@ -8,8 +8,8 @@
 
 ## Table des matières
 
-1. [Schémas visuels](#schémas-visuels) ⭐
-2. [Vue d'ensemble](#vue-densemble)
+1. [Vue d'ensemble](#vue-densemble)
+2. [Schémas visuels](#schémas-visuels) (diagrammes pliables)
 3. [Structure du repository](#structure-du-repository)
 4. [Installation locale](#installation-locale)
 5. [Architecture de la base de données](#architecture-de-la-base-de-données)
@@ -25,19 +25,42 @@
 
 ---
 
+## Vue d'ensemble
+
+Cette application gère les tournées de livraison entre laboratoires dentaires et leurs clients (dentistes/cabinets). Le système permet de :
+
+- **Gérer les laboratoires** et leurs clients (dentistes)
+- **Planifier des tournées** quotidiennes avec arrêts multiples
+- **Générer automatiquement les routes** des livreurs
+- **Suivre les livraisons** en temps réel avec preuves photos
+- **Facturer automatiquement** les clients par mois
+- **Analyser les statistiques** de performance
+
+### Acteurs du système
+
+| Rôle | Description | Authentification |
+|------|-------------|------------------|
+| **Administrator** | Super admin avec tous les droits | `administrators` + `auth.users` |
+| **Admin** | Gestion quotidienne des tournées | `admins` + `auth.users` |
+| **Laboratoire** | Soumet ses tournées, voit ses stats | `laboratories` + `auth.users` |
+| **Livreur** | Exécute les routes, prend les photos | `drivers` + `auth.users` |
+
+---
+
 ## Schémas visuels
 
-### Diagramme Entité-Relation (ERD)
+> Cliquez sur chaque section pour déplier le diagramme
+
+<details>
+<summary><strong>Diagramme Entité-Relation (ERD)</strong> - Relations entre toutes les tables</summary>
 
 ```mermaid
 erDiagram
-    %% Authentification
     AUTH_USERS ||--o| ADMINISTRATORS : "user_id"
     AUTH_USERS ||--o| ADMINS : "user_id"
     AUTH_USERS ||--|| LABORATORIES : "user_id"
     AUTH_USERS ||--|| DRIVERS : "user_id"
 
-    %% Entités principales
     LABORATORIES ||--|| LOCATIONS : "location_id"
     LABORATORIES ||--o{ LABORATORY_CLIENTS : "laboratory_id"
     LABORATORIES ||--o{ LAB_TOURS : "laboratory_id"
@@ -51,7 +74,6 @@ erDiagram
     LABORATORY_CLIENTS ||--o{ LAB_TOUR_STOPS : "client_id"
     LABORATORY_CLIENTS ||--o{ BILLING_CONFIGURATIONS : "client_id"
 
-    %% Tournées laboratoire
     LAB_TOURS ||--o{ LAB_TOUR_STOPS : "tour_id"
     LAB_TOURS ||--o{ LAB_TOUR_SHIPMENTS : "lab_tour_id"
     LAB_TOURS ||--o{ LAB_TOUR_LATE_STOPS : "lab_tour_id"
@@ -59,7 +81,6 @@ erDiagram
     LAB_TOUR_SHIPMENTS }o--|| LOCATIONS : "from_location_id"
     LAB_TOUR_SHIPMENTS }o--|| LOCATIONS : "to_location_id"
 
-    %% Routes livreur
     DRIVER_ROUTES ||--o{ DRIVER_ROUTE_STOPS : "route_id"
     DRIVER_ROUTES ||--o{ DRIVER_ROUTE_SHIPMENTS : "route_id"
 
@@ -69,15 +90,12 @@ erDiagram
     DRIVER_ROUTE_SHIPMENTS }o--|| LABORATORIES : "laboratory_id"
     DRIVER_ROUTE_SHIPMENTS }o--o| LABORATORY_CLIENTS : "laboratory_client_id"
 
-    %% Facturation
     BILLING_INVOICES ||--o{ BILLING_INVOICE_ITEMS : "invoice_id"
     BILLING_INVOICE_ITEMS }o--|| BILLING_CONFIGURATIONS : "billing_configuration_id"
 
-    %% Autres
     LOCATIONS ||--o{ LOCATION_PHOTOS : "location_id"
     DEPOT ||--|| LOCATIONS : "location_id"
 
-    %% Définitions des tables
     AUTH_USERS {
         uuid id PK
         string email
@@ -159,51 +177,54 @@ erDiagram
     }
 ```
 
-### Workflow métier complet
+</details>
+
+<details>
+<summary><strong>Workflow metier complet</strong> - Du laboratoire a la facturation</summary>
 
 ```mermaid
 flowchart TB
-    subgraph LAB["🏭 LABORATOIRE"]
-        L1[Crée une tournée<br/>lab_tours.status = draft]
-        L2[Ajoute les arrêts clients<br/>lab_tour_stops]
-        L3[Soumet la tournée<br/>lab_tours.status = pending]
+    subgraph LAB["LABORATOIRE"]
+        L1[Cree une tournee<br/>lab_tours.status = draft]
+        L2[Ajoute les arrets clients<br/>lab_tour_stops]
+        L3[Soumet la tournee<br/>lab_tours.status = pending]
     end
 
-    subgraph ADMIN["👨‍💼 ADMIN"]
-        A1{Examine la<br/>tournée}
+    subgraph ADMIN["ADMINISTRATION"]
+        A1{Examine la<br/>tournee}
         A2[Valide<br/>status = validated]
         A3[Rejette<br/>status = rejected]
-        A4[Génère les routes<br/>generate_driver_routes]
+        A4[Genere les routes<br/>generate_driver_routes]
     end
 
-    subgraph SYSTEM["⚙️ SYSTÈME"]
-        S1[Crée driver_routes]
-        S2[Génère driver_route_stops]
-        S3[Génère driver_route_shipments]
+    subgraph SYSTEM["SYSTEME"]
+        S1[Cree driver_routes]
+        S2[Genere driver_route_stops]
+        S3[Genere driver_route_shipments]
         S4[Optimise la route<br/>Edge Function]
     end
 
-    subgraph DRIVER["🚗 LIVREUR"]
+    subgraph DRIVER["LIVREUR"]
         D1[Consulte sa route du jour]
-        D2[Démarre la route<br/>status = in_progress]
-        D3[Arrive à un arrêt]
+        D2[Demarre la route<br/>status = in_progress]
+        D3[Arrive a un arret]
         D4[Effectue pickup/delivery]
         D5[Prend photo preuve<br/>Edge Function]
-        D6[Marque arrêt terminé]
-        D7{Autres<br/>arrêts ?}
+        D6[Marque arret termine]
+        D7{Autres<br/>arrets ?}
         D8[Termine la route<br/>status = completed]
     end
 
-    subgraph BILLING["💰 FACTURATION"]
+    subgraph BILLING["FACTURATION"]
         B1[Fin de mois]
         B2[generate_monthly_invoice]
-        B3[Facture générée]
+        B3[Facture generee]
         B4[mark_invoice_as_sent]
     end
 
     L1 --> L2 --> L3 --> A1
-    A1 -->|Approuvée| A2
-    A1 -->|Problème| A3
+    A1 -->|Approuvee| A2
+    A1 -->|Probleme| A3
     A2 --> A4
     A3 -.->|Notification| L1
 
@@ -222,52 +243,55 @@ flowchart TB
     style BILLING fill:#fce4ec
 ```
 
-### Architecture des données
+</details>
+
+<details>
+<summary><strong>Architecture des donnees</strong> - Groupes de tables par domaine</summary>
 
 ```mermaid
 flowchart LR
-    subgraph AUTH["🔐 Authentification"]
+    subgraph AUTH["Authentification"]
         AU[auth.users]
     end
 
-    subgraph USERS["👥 Utilisateurs"]
+    subgraph USERS["Utilisateurs"]
         AD[administrators]
         AM[admins]
         LB[laboratories]
         DR[drivers]
     end
 
-    subgraph GEO["📍 Géolocalisation"]
+    subgraph GEO["Geolocalisation"]
         LO[locations]
         LP[location_photos]
         DP[depot]
     end
 
-    subgraph CLIENTS["🦷 Clients"]
+    subgraph CLIENTS["Clients"]
         LC[laboratory_clients]
         LCA[laboratory_clients_audit]
     end
 
-    subgraph TOURS["📋 Tournées Labo"]
+    subgraph TOURS["Tournees Labo"]
         LT[lab_tours]
         LTS[lab_tour_stops]
         LTSH[lab_tour_shipments]
         LTLS[lab_tour_late_stops]
     end
 
-    subgraph ROUTES["🚚 Routes Livreur"]
+    subgraph ROUTES["Routes Livreur"]
         DRO[driver_routes]
         DRS[driver_route_stops]
         DRSH[driver_route_shipments]
     end
 
-    subgraph STATS["📊 Statistiques"]
+    subgraph STATS["Statistiques"]
         DST[driver_statistics]
         LST[laboratory_statistics]
         EL[error_logs]
     end
 
-    subgraph BILLING["💳 Facturation"]
+    subgraph BILL["Facturation"]
         BC[billing_configurations]
         BI[billing_invoices]
         BII[billing_invoice_items]
@@ -300,14 +324,17 @@ flowchart LR
     style TOURS fill:#d1c4e9
     style ROUTES fill:#ffccbc
     style STATS fill:#b2dfdb
-    style BILLING fill:#f8bbd9
+    style BILL fill:#f8bbd9
 ```
 
-### Cycle de vie d'une tournée
+</details>
+
+<details>
+<summary><strong>Cycle de vie d'une tournee</strong> - Etats et transitions</summary>
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Draft: Création
+    [*] --> Draft: Creation
 
     Draft --> Pending: Soumission
     Draft --> Draft: Modification
@@ -317,42 +344,45 @@ stateDiagram-v2
     Pending --> PendingChanges: Demande modifications
 
     Rejected --> Draft: Correction
-    PendingChanges --> Validated: Réapprobation
+    PendingChanges --> Validated: Reapprobation
 
     Validated --> RouteGenerated: generate_driver_routes()
 
-    RouteGenerated --> InProgress: Livreur démarre
-    InProgress --> Completed: Tous arrêts terminés
+    RouteGenerated --> InProgress: Livreur demarre
+    InProgress --> Completed: Tous arrets termines
 
     Completed --> [*]
 
     note right of Draft: lab_tours.status
-    note right of RouteGenerated: driver_routes créée
-    note right of InProgress: Suivi temps réel
+    note right of RouteGenerated: driver_routes creee
+    note right of InProgress: Suivi temps reel
 ```
 
-### Types d'arrêts dans une route
+</details>
+
+<details>
+<summary><strong>Types d'arrets dans une route</strong> - Ordre typique des stops</summary>
 
 ```mermaid
 flowchart LR
     subgraph ROUTE["Route du livreur"]
         direction TB
-        START((🏠 Départ<br/>Domicile))
+        START((Depart<br/>Domicile))
 
-        DP[🏢 depot_pickup<br/>Récupération dépôt]
+        DP[depot_pickup<br/>Recuperation depot]
 
-        LP1[🏭 lab_pickup<br/>Labo A]
-        LP2[🏭 lab_pickup<br/>Labo B]
+        LP1[lab_pickup<br/>Labo A]
+        LP2[lab_pickup<br/>Labo B]
 
-        C1[🦷 client<br/>Dentiste 1<br/>pickup]
-        C2[🦷 client<br/>Dentiste 2<br/>delivery]
-        C3[🦷 client<br/>Dentiste 3<br/>both]
+        C1[client<br/>Dentiste 1<br/>pickup]
+        C2[client<br/>Dentiste 2<br/>delivery]
+        C3[client<br/>Dentiste 3<br/>both]
 
-        LD1[🏭 lab_dropoff<br/>Labo A]
+        LD1[lab_dropoff<br/>Labo A]
 
-        DD[🏢 depot_dropoff<br/>Dépôt final]
+        DD[depot_dropoff<br/>Depot final]
 
-        END((🏠 Retour))
+        END((Retour))
     end
 
     START --> DP --> LP1 --> LP2 --> C1 --> C2 --> C3 --> LD1 --> DD --> END
@@ -367,27 +397,7 @@ flowchart LR
     style DD fill:#bbdefb
 ```
 
----
-
-## Vue d'ensemble
-
-Cette application gère les tournées de livraison entre laboratoires dentaires et leurs clients (dentistes/cabinets). Le système permet de :
-
-- **Gérer les laboratoires** et leurs clients (dentistes)
-- **Planifier des tournées** quotidiennes avec arrêts multiples
-- **Générer automatiquement les routes** des livreurs
-- **Suivre les livraisons** en temps réel avec preuves photos
-- **Facturer automatiquement** les clients par mois
-- **Analyser les statistiques** de performance
-
-### Acteurs du système
-
-| Rôle | Description | Authentification |
-|------|-------------|------------------|
-| **Administrator** | Super admin avec tous les droits | `administrators` + `auth.users` |
-| **Admin** | Gestion quotidienne des tournées | `admins` + `auth.users` |
-| **Laboratoire** | Soumet ses tournées, voit ses stats | `laboratories` + `auth.users` |
-| **Livreur** | Exécute les routes, prend les photos | `drivers` + `auth.users` |
+</details>
 
 ---
 
